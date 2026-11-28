@@ -63,12 +63,11 @@ def score_move(game, move) -> float:
     target_kind = abs(target_code) if target_code else 0
 
     next_state = game._after(move)
-    outcome = next_state.outcome()
 
-    # 1. Thắng ngay lập tức
-    if outcome == player:
+    # 1. Thắng ngay lập tức hoặc tránh hòa cờ lặp lại
+    if next_state.king_square(opponent) is None:
         return 100000.0
-    if outcome == EMPTY:
+    if next_state.history.count(next_state.key()) >= 3:
         return -100.0  # Tránh hòa cờ lặp lại nếu có nước đi khác
 
     score = 0.0
@@ -171,21 +170,41 @@ def rollout_policy(game):
     return random.choice(top_k)[1]
 
 
-def rollout(game, max_steps: int = 40) -> int:
+def rollout(game, max_steps: int = 14) -> int:
     """
-    Thực hiện mô phỏng cờ từ trạng thái hiện tại đến khi kết thúc hoặc đạt giới hạn số bước.
+    Thực hiện mô phỏng cờ nhanh từ trạng thái hiện tại đến khi kết thúc hoặc đạt giới hạn số bước.
+    Tối ưu tốc độ cao phục vụ MCTS.
     Trả về: RED, BLACK, hoặc EMPTY (hòa).
     """
     sim_game = game.clone()
     for _ in range(max_steps):
-        outcome = sim_game.outcome()
+        moves = sim_game.legal_moves()
+        outcome = sim_game.outcome(moves)
         if outcome is not None:
             return outcome
 
-        move = rollout_policy(sim_game)
-        if move is None:
-            break
-        sim_game = sim_game.play(move)
+        # Ưu tiên các nước ăn quân khi mô phỏng (tăng tính thực tế cho MCTS)
+        captures = [m for m in moves if sim_game.board[m.dst[0]][m.dst[1]] != 0]
+        if captures and random.random() < 0.65:
+            move = random.choice(captures)
+        else:
+            move = random.choice(moves)
+
+        sim_game = sim_game._after(move)
 
     outcome = sim_game.outcome()
-    return outcome if outcome is not None else EMPTY
+    if outcome is not None:
+        return outcome
+
+    # Đánh giá ưu thế bàn cờ ở cuối bước mô phỏng nếu chưa kết thúc
+    try:
+        from ai.evaluation import evaluate_board
+        score_diff = evaluate_board(sim_game, RED)
+        if score_diff > 150:
+            return RED
+        elif score_diff < -150:
+            return BLACK
+    except Exception:
+        pass
+
+    return EMPTY

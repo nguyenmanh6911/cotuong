@@ -1,12 +1,11 @@
 """
 Pygame User Interface for Xiangqi (Cờ Tướng)
-Cải tiến:
-- Sửa lỗi tràn hình nền gỗ ở phía dưới và bên phải bàn cờ bằng cách render khép kín vào Surface riêng.
-- Bộ chọn chế độ chơi dạng danh sách thẻ (Selector), cho phép click chọn trực tiếp.
-- Chế độ hiện tại được hiển thị nổi bật với màu sắc tương phản, viền vàng kim và radio button sắc nét.
-- Đầy đủ 3+ chế độ: Người vs Máy (Đỏ), Người vs Máy (Đen), Máy vs Máy, Người vs Người.
+Hỗ trợ:
+- Lựa chọn thuật toán AI linh hoạt: MCTS (Monte Carlo Tree Search), Heuristic / Greedy, Minimax Alpha-Beta.
+- Bộ chọn chế độ chơi trực tiếp: Người vs Máy (Đỏ), Người vs Máy (Đen), Máy vs Máy, Hai Người Chơi.
+- Khung gỗ bo viền chuẩn xác không bị tràn hình nền.
 - Đồ họa SVG sắc nét, gợi ý nước đi, highlight nước vừa đi, cảnh báo chiếu tướng.
-- Không sử dụng ký tự emoji ngoài bảng font chuẩn để tránh lỗi hiển thị ô vuông.
+- Phím tắt tiện lợi: U (Undo), R (Restart), M (Đổi chế độ), A (Đổi thuật toán AI), F (Xoay), Space (Hint/Pause).
 """
 
 import os
@@ -21,6 +20,8 @@ from game import (
 )
 from ai.rollout import get_best_move
 from ai.mcts import mcts_best_move
+from ai.minimax import find_best_move
+
 # Danh mục các chế độ chơi
 MODE_HUMAN_VS_AI_RED = "human_vs_ai_red"      # Người đi Đỏ (trước), Máy đi Đen (sau)
 MODE_HUMAN_VS_AI_BLACK = "human_vs_ai_black"  # Máy đi Đỏ (trước), Người đi Đen (sau)
@@ -50,6 +51,17 @@ MODE_CONFIGS = [
     ),
 ]
 
+# Danh mục các thuật toán AI
+AI_MCTS = "mcts"
+AI_GREEDY = "greedy"
+AI_MINIMAX = "minimax"
+
+AI_ENGINE_CONFIGS = [
+    (AI_MCTS, "MCTS (Monte Carlo)", "Mô phỏng cây ngẫu nhiên"),
+    (AI_GREEDY, "Heuristic / Greedy", "Đánh giá ăn quân & thoát hiểm"),
+    (AI_MINIMAX, "Minimax (Alpha-Beta)", "Duyệt độ sâu cắt tỉa Alpha-Beta"),
+]
+
 
 class XiangqiUI:
     def __init__(self, res_dir: str = "ui/res"):
@@ -58,14 +70,14 @@ class XiangqiUI:
         pygame.display.set_caption("Cờ Tướng - Xiangqi AI (Pygame)")
 
         self.res_dir = res_dir
-        self.width = 890
-        self.height = 645
+        self.width = 905
+        self.height = 665
         self.screen = pygame.display.set_mode((self.width, self.height))
         self.clock = pygame.time.Clock()
 
         # Board layout parameters
         self.board_x = 24
-        self.board_y = 30
+        self.board_y = 35
         self.grid_ox = 32
         self.grid_oy = 32
         self.cell_w = 57.125
@@ -80,7 +92,8 @@ class XiangqiUI:
         # Game state
         self.game = CoTuongGame()
         self.mode = MODE_HUMAN_VS_AI_RED
-        self.flip_board = False  # False: Đỏ ở dưới, True: Đen ở dưới
+        self.ai_engine = AI_MCTS  # Mặc định sử dụng MCTS theo yêu cầu
+        self.flip_board = False   # False: Đỏ ở dưới, True: Đen ở dưới
         self.selected_sq: tuple[int, int] | None = None
         self.valid_moves: list[Move] = []
         self.last_move: Move | None = None
@@ -95,43 +108,51 @@ class XiangqiUI:
 
         # Clickable rects
         self.mode_rects: dict[str, pygame.Rect] = {}
+        self.ai_rects: dict[str, pygame.Rect] = {}
         self.action_rects: dict[str, pygame.Rect] = {}
         self._init_layout()
 
     def _init_layout(self):
         """Khởi tạo trước các tọa độ hình chữ nhật cho các nút bấm."""
-        px = 572
-        py = 20
-        pw = 296
-        status_box_y = py + 62
-        status_box_h = 88
+        px = 576
+        py = 18
+        pw = 305
 
-        # Mode buttons
-        mode_sec_y = status_box_y + status_box_h + 12
-        mode_btn_y = mode_sec_y + 24
-        mode_btn_h = 40
-        mode_gap = 6
+        status_box_y = py + 54
+        status_box_h = 74
 
+        # AI Engine selector buttons
+        ai_sec_y = status_box_y + status_box_h + 8
+        ai_btn_y = ai_sec_y + 20
+        ai_btn_h = 27
+        ai_gap = 4
+        for idx, (a_id, _, _) in enumerate(AI_ENGINE_CONFIGS):
+            self.ai_rects[a_id] = pygame.Rect(px + 14, ai_btn_y + idx * (ai_btn_h + ai_gap), pw - 28, ai_btn_h)
+
+        # Mode selector buttons
+        mode_sec_y = ai_btn_y + len(AI_ENGINE_CONFIGS) * (ai_btn_h + ai_gap) + 8
+        mode_btn_y = mode_sec_y + 22
+        mode_btn_h = 30
+        mode_gap = 4
         for idx, (m_id, _, _) in enumerate(MODE_CONFIGS):
             self.mode_rects[m_id] = pygame.Rect(px + 14, mode_btn_y + idx * (mode_btn_h + mode_gap), pw - 28, mode_btn_h)
 
         # Action buttons
         act_sec_y = mode_btn_y + len(MODE_CONFIGS) * (mode_btn_h + mode_gap) + 8
-        btn_start_y = act_sec_y + 28
-        btn_h = 34
-        btn_gap = 7
-
+        btn_start_y = act_sec_y + 22
+        btn_h = 30
+        btn_gap = 5
         for idx, act_id in enumerate(["undo", "restart", "flip", "pause_ai", "step_ai"]):
             self.action_rects[act_id] = pygame.Rect(px + 14, btn_start_y + idx * (btn_h + btn_gap), pw - 28, btn_h)
 
     def _load_fonts(self):
         font_candidates = ["Segoe UI", "Tahoma", "Arial", "sans-serif"]
-        self.font_title = pygame.font.SysFont(font_candidates, 21, bold=True)
-        self.font_bold = pygame.font.SysFont(font_candidates, 15, bold=True)
-        self.font_mode_title = pygame.font.SysFont(font_candidates, 14, bold=True)
+        self.font_title = pygame.font.SysFont(font_candidates, 20, bold=True)
+        self.font_bold = pygame.font.SysFont(font_candidates, 14, bold=True)
+        self.font_mode_title = pygame.font.SysFont(font_candidates, 13, bold=True)
         self.font_mode_sub = pygame.font.SysFont(font_candidates, 11)
         self.font_main = pygame.font.SysFont(font_candidates, 13)
-        self.font_status = pygame.font.SysFont(font_candidates, 16, bold=True)
+        self.font_status = pygame.font.SysFont(font_candidates, 15, bold=True)
         self.font_small = pygame.font.SysFont(font_candidates, 11)
         self.font_badge = pygame.font.SysFont(font_candidates, 10, bold=True)
 
@@ -276,8 +297,21 @@ class XiangqiUI:
 
         self.reset_game()
 
+    def set_ai_engine(self, engine: str):
+        """Thay đổi thuật toán AI."""
+        if self.ai_engine == engine:
+            return
+        self.ai_engine = engine
+
+    def cycle_ai_engine(self):
+        """Chuyển sang thuật toán AI tiếp theo (phím tắt A)."""
+        all_engines = [e[0] for e in AI_ENGINE_CONFIGS]
+        curr_idx = all_engines.index(self.ai_engine)
+        next_engine = all_engines[(curr_idx + 1) % len(all_engines)]
+        self.set_ai_engine(next_engine)
+
     def cycle_mode(self):
-        """Chuyển sang chế độ tiếp theo (dành cho phím tắt M)."""
+        """Chuyển sang chế độ tiếp theo (phím tắt M)."""
         all_modes = [c[0] for c in MODE_CONFIGS]
         curr_idx = all_modes.index(self.mode)
         next_mode = all_modes[(curr_idx + 1) % len(all_modes)]
@@ -295,6 +329,15 @@ class XiangqiUI:
         elif self.mode == MODE_HUMAN_VS_AI_BLACK:
             return self.game.current_player == RED
         return False
+
+    def compute_ai_move(self) -> Move | None:
+        """Tính nước cờ cho AI bằng thuật toán hiện tại đã chọn."""
+        if self.ai_engine == AI_MCTS:
+            return mcts_best_move(self.game, iterations=50, time_limit=1.0)
+        elif self.ai_engine == AI_MINIMAX:
+            return find_best_move(self.game, depth=2)
+        else:
+            return get_best_move(self.game)
 
     def sq_to_screen(self, row: int, col: int) -> tuple[int, int]:
         vr = 9 - row if self.flip_board else row
@@ -335,13 +378,19 @@ class XiangqiUI:
     def handle_click(self, pos: tuple[int, int]):
         mx, my = pos
 
-        # 1. Kiểm tra click vào danh sách CHỌN CHẾ ĐỘ CHƠI
+        # 1. Kiểm tra click chọn THUẬT TOÁN AI
+        for ai_key, rect in self.ai_rects.items():
+            if rect.collidepoint(mx, my):
+                self.set_ai_engine(ai_key)
+                return
+
+        # 2. Kiểm tra click chọn CHẾ ĐỘ CHƠI
         for mode_key, rect in self.mode_rects.items():
             if rect.collidepoint(mx, my):
                 self.set_mode(mode_key)
                 return
 
-        # 2. Kiểm tra click vào CÁC NÚT THAO TÁC
+        # 3. Kiểm tra click vào CÁC NÚT THAO TÁC
         for act_key, rect in self.action_rects.items():
             if rect.collidepoint(mx, my):
                 if act_key == "undo":
@@ -354,7 +403,7 @@ class XiangqiUI:
                     self.ai_paused = not self.ai_paused
                 elif act_key == "step_ai":
                     if not self.game.outcome():
-                        best_m = get_best_move(self.game)
+                        best_m = self.compute_ai_move()
                         if best_m:
                             self.apply_move(best_m)
                 return
@@ -363,7 +412,7 @@ class XiangqiUI:
         if self.is_ai_turn() or self.game.outcome() is not None:
             return
 
-        # 3. Xử lý click chọn quân / đi cờ trên bàn cờ
+        # 4. Xử lý click chọn quân / đi cờ trên bàn cờ
         sq = self.screen_to_sq(mx, my)
         if sq is None:
             self.selected_sq = None
@@ -401,16 +450,15 @@ class XiangqiUI:
                 self.ai_thinking = True
                 self.ai_delay_timer = now
             else:
-                delay = 0.4 if self.mode == MODE_AI_VS_AI else 0.25
+                delay = 0.35 if self.mode == MODE_AI_VS_AI else 0.2
                 if now - self.ai_delay_timer >= delay:
-                    best_m = get_best_move(self.game)
+                    best_m = self.compute_ai_move()
                     if best_m is not None:
                         self.apply_move(best_m)
                     self.ai_thinking = False
 
     def draw_board(self):
         """Vẽ khung gỗ bao quanh và bề mặt bàn cờ không bị tràn."""
-        # Khung viền gỗ tinh tế ôm trọn bàn cờ
         border_pad = 10
         frame_rect = pygame.Rect(
             self.board_x - border_pad,
@@ -418,32 +466,25 @@ class XiangqiUI:
             521 + border_pad * 2,
             577 + border_pad * 2
         )
-        # Bóng đổ ngoài
         pygame.draw.rect(self.screen, (15, 13, 11), frame_rect.inflate(4, 4), border_radius=8)
-        # Viền gỗ sẫm
         pygame.draw.rect(self.screen, (58, 43, 30), frame_rect, border_radius=6)
         pygame.draw.rect(self.screen, (110, 85, 60), frame_rect, width=2, border_radius=6)
 
-        # Vẽ Surface bàn cờ chuẩn xác 521x577 vào đúng vị trí
         board_surf = self.board_surf_flipped if self.flip_board else self.board_surf_normal
         self.screen.blit(board_surf, (self.board_x, self.board_y))
-
-        # Đường viền nét mảnh bao quanh giao diện cờ
         pygame.draw.rect(self.screen, (40, 30, 20), (self.board_x, self.board_y, 521, 577), width=1)
 
     def draw_highlights(self):
         """Vẽ đánh dấu nước cờ gần nhất, quân đang chọn, và gợi ý nước đi."""
-        # 1. Đánh dấu nước đi gần nhất
         if self.last_move:
             for sq in (self.last_move.src, self.last_move.dst):
                 cx, cy = self.sq_to_screen(sq[0], sq[1])
                 rect = pygame.Rect(cx - 28, cy - 28, 56, 56)
                 hl_surf = pygame.Surface((56, 56), pygame.SRCALPHA)
-                hl_surf.fill((255, 215, 0, 85))  # Vàng mờ
+                hl_surf.fill((255, 215, 0, 85))
                 self.screen.blit(hl_surf, rect)
                 pygame.draw.rect(self.screen, (255, 185, 0, 220), rect, width=2, border_radius=4)
 
-        # 2. Đánh dấu ô đang được chọn
         if self.selected_sq:
             cx, cy = self.sq_to_screen(self.selected_sq[0], self.selected_sq[1])
             oos_icon = self.assets.get("oos")
@@ -453,7 +494,6 @@ class XiangqiUI:
                 rect = pygame.Rect(cx - 28, cy - 28, 56, 56)
                 pygame.draw.rect(self.screen, (52, 152, 219), rect, width=3, border_radius=5)
 
-        # 3. Gợi ý các nước đi hợp lệ
         for m in self.valid_moves:
             dr, dc = m.dst
             cx, cy = self.sq_to_screen(dr, dc)
@@ -461,11 +501,9 @@ class XiangqiUI:
 
             hint_surf = pygame.Surface((56, 56), pygame.SRCALPHA)
             if target_piece != 0:
-                # Nước ăn quân: vòng tròn đỏ viền dày cảnh báo
                 pygame.draw.circle(hint_surf, (231, 76, 60, 200), (28, 28), 24, width=3)
                 pygame.draw.circle(hint_surf, (231, 76, 60, 90), (28, 28), 10)
             else:
-                # Nước di chuyển bình thường: chấm tròn xanh lá
                 pygame.draw.circle(hint_surf, (46, 204, 113, 210), (28, 28), 8)
                 pygame.draw.circle(hint_surf, (39, 174, 96, 255), (28, 28), 8, width=2)
             self.screen.blit(hint_surf, (cx - 28, cy - 28))
@@ -487,7 +525,6 @@ class XiangqiUI:
                 top_left = (cx - 28, cy - 28)
 
                 if kind == VUA and ((player == RED and in_check_red) or (player == BLACK and in_check_black)):
-                    # Hào quang đỏ quanh Tướng bị chiếu
                     aura = pygame.Surface((64, 64), pygame.SRCALPHA)
                     pygame.draw.circle(aura, (255, 0, 0, 115), (32, 32), 30)
                     self.screen.blit(aura, (cx - 32, cy - 32))
@@ -501,11 +538,11 @@ class XiangqiUI:
                     self.screen.blit(piece_surf, top_left)
 
     def draw_panel(self):
-        """Vẽ bảng điều khiển bên phải với Bộ chọn chế độ trực quan và nổi bật."""
-        px = 572
-        py = 20
-        pw = 296
-        ph = 605
+        """Vẽ bảng điều khiển bên phải với Bộ chọn AI và Chế độ chơi nổi bật."""
+        px = 576
+        py = 18
+        pw = 305
+        ph = 625
 
         # Khung panel chính
         panel_rect = pygame.Rect(px, py, pw, ph)
@@ -514,18 +551,24 @@ class XiangqiUI:
 
         # Tiêu đề
         title = self.font_title.render("CỜ TƯỚNG AI", True, (241, 196, 15))
-        self.screen.blit(title, (px + (pw - title.get_width()) // 2, py + 12))
+        self.screen.blit(title, (px + (pw - title.get_width()) // 2, py + 10))
 
-        subtitle = self.font_small.render("Chính sách Heuristic / Greedy Rollout", True, (160, 155, 145))
-        self.screen.blit(subtitle, (px + (pw - subtitle.get_width()) // 2, py + 38))
+        engine_label = {
+            AI_MCTS: "MCTS (Monte Carlo Tree Search)",
+            AI_GREEDY: "Heuristic / Greedy Rollout",
+            AI_MINIMAX: "Minimax Alpha-Beta"
+        }.get(self.ai_engine, "AI Engine")
 
-        pygame.draw.line(self.screen, (55, 50, 45), (px + 14, py + 54), (px + pw - 14, py + 54))
+        subtitle = self.font_small.render(f"Đang dùng: {engine_label}", True, (80, 200, 255))
+        self.screen.blit(subtitle, (px + (pw - subtitle.get_width()) // 2, py + 34))
+
+        pygame.draw.line(self.screen, (55, 50, 45), (px + 14, py + 50), (px + pw - 14, py + 50))
 
         # ---------------------------------------------------------------------
         # 1. Thẻ trạng thái trận đấu (Status Box)
         # ---------------------------------------------------------------------
-        status_box_y = py + 62
-        status_box_h = 88
+        status_box_y = py + 56
+        status_box_h = 76
         status_rect = pygame.Rect(px + 14, status_box_y, pw - 28, status_box_h)
         pygame.draw.rect(self.screen, (24, 21, 19), status_rect, border_radius=6)
         pygame.draw.rect(self.screen, (60, 54, 48), status_rect, width=1, border_radius=6)
@@ -535,41 +578,40 @@ class XiangqiUI:
 
         if outcome is None:
             # Banner lượt đi
-            turn_rect = pygame.Rect(px + 24, status_box_y + 10, pw - 48, 28)
+            turn_rect = pygame.Rect(px + 22, status_box_y + 8, pw - 44, 25)
             turn_bg = (192, 57, 43) if curr_p == RED else (44, 62, 80)
             pygame.draw.rect(self.screen, turn_bg, turn_rect, border_radius=4)
 
-            # Vẽ chấm tròn chỉ thị phe (thay thế emoji font để không bị lỗi ô vuông)
             dot_color = (255, 80, 80) if curr_p == RED else (220, 220, 220)
-            pygame.draw.circle(self.screen, dot_color, (turn_rect.x + 20, turn_rect.centery), 6)
-            pygame.draw.circle(self.screen, (255, 255, 255), (turn_rect.x + 20, turn_rect.centery), 6, width=1)
+            pygame.draw.circle(self.screen, dot_color, (turn_rect.x + 18, turn_rect.centery), 5)
+            pygame.draw.circle(self.screen, (255, 255, 255), (turn_rect.x + 18, turn_rect.centery), 5, width=1)
 
             turn_str = "LƯỢT: QUÂN ĐỎ" if curr_p == RED else "LƯỢT: QUÂN ĐEN"
-            turn_txt = self.font_status.render(turn_str, True, (255, 255, 255))
-            self.screen.blit(turn_txt, (turn_rect.x + 36, turn_rect.centery - turn_txt.get_height() // 2))
+            turn_txt = self.font_bold.render(turn_str, True, (255, 255, 255))
+            self.screen.blit(turn_txt, (turn_rect.x + 32, turn_rect.centery - turn_txt.get_height() // 2))
 
             # Thông báo trạng thái: Chiếu tướng hoặc Đang đấu
             in_check = self.game.in_check(curr_p)
             if in_check:
                 check_txt = self.font_bold.render("CHIẾU TƯỚNG! (Nguy cấp)", True, (255, 80, 80))
-                self.screen.blit(check_txt, (px + 26, status_box_y + 44))
+                self.screen.blit(check_txt, (px + 24, status_box_y + 36))
             else:
                 normal_txt = self.font_main.render("Trận đấu đang tiếp diễn...", True, (170, 165, 155))
-                self.screen.blit(normal_txt, (px + 26, status_box_y + 44))
+                self.screen.blit(normal_txt, (px + 24, status_box_y + 36))
 
             # Thông báo AI đang tính
             if self.is_ai_turn():
-                ai_txt = self.font_main.render("AI đang tính nước đi...", True, (243, 156, 18))
-                self.screen.blit(ai_txt, (px + 26, status_box_y + 64))
+                engine_tag = "MCTS" if self.ai_engine == AI_MCTS else ("Minimax" if self.ai_engine == AI_MINIMAX else "Greedy")
+                ai_txt = self.font_small.render(f"AI ({engine_tag}) đang tính nước đi...", True, (243, 156, 18))
+                self.screen.blit(ai_txt, (px + 24, status_box_y + 55))
                 if self.assets.get("thinking"):
-                    self.screen.blit(self.assets["thinking"], (px + 180, status_box_y + 68))
+                    self.screen.blit(self.assets["thinking"], (px + 185, status_box_y + 58))
             elif self.mode == MODE_AI_VS_AI and self.ai_paused:
-                pause_txt = self.font_main.render("Máy vs Máy: Đang tạm dừng", True, (230, 200, 100))
-                self.screen.blit(pause_txt, (px + 26, status_box_y + 64))
+                pause_txt = self.font_small.render("Máy vs Máy: Đang tạm dừng", True, (230, 200, 100))
+                self.screen.blit(pause_txt, (px + 24, status_box_y + 55))
 
         else:
-            # Kết quả chung cuộc
-            win_rect = pygame.Rect(px + 24, status_box_y + 12, pw - 48, 32)
+            win_rect = pygame.Rect(px + 22, status_box_y + 10, pw - 44, 28)
             pygame.draw.rect(self.screen, (39, 174, 96), win_rect, border_radius=4)
 
             if outcome == RED:
@@ -578,22 +620,71 @@ class XiangqiUI:
                 res_txt = self.font_status.render("ĐEN THẮNG! (Chiếu bí)", True, (255, 255, 255))
             else:
                 res_txt = self.font_status.render("HÒA CỜ!", True, (255, 255, 255))
-            self.screen.blit(res_txt, (win_rect.centerx - res_txt.get_width() // 2, win_rect.centery - win_txt.get_height() // 2))
+            self.screen.blit(res_txt, (win_rect.centerx - res_txt.get_width() // 2, win_rect.centery - res_txt.get_height() // 2))
 
-            remind_txt = self.font_main.render("Nhấn 'Ván Mới' để bắt đầu lại", True, (200, 195, 185))
-            self.screen.blit(remind_txt, (px + 26, status_box_y + 56))
+            remind_txt = self.font_small.render("Nhấn 'Ván Mới' để bắt đầu lại", True, (200, 195, 185))
+            self.screen.blit(remind_txt, (px + 24, status_box_y + 46))
 
         # ---------------------------------------------------------------------
-        # 2. Bộ chọn Chế độ chơi (Mode Selector Cards) - Rất nổi bật & trực quan
+        # 2. Bộ chọn THUẬT TOÁN AI (MCTS / Greedy / Minimax)
         # ---------------------------------------------------------------------
-        mode_sec_y = status_box_y + status_box_h + 12
-        sec_title = self.font_bold.render("CHỌN CHẾ ĐỘ CHƠI:", True, (241, 196, 15))
-        self.screen.blit(sec_title, (px + 14, mode_sec_y))
+        ai_sec_y = status_box_y + status_box_h + 8
+        ai_sec_lbl = self.font_bold.render("THUẬT TOÁN AI:", True, (241, 196, 15))
+        self.screen.blit(ai_sec_lbl, (px + 14, ai_sec_y))
 
-        mode_btn_y = mode_sec_y + 24
-        mode_btn_h = 40
-        mode_gap = 6
+        ai_btn_y = ai_sec_y + 20
+        ai_btn_h = 27
+        ai_gap = 4
         mouse_pos = pygame.mouse.get_pos()
+
+        for idx, (a_id, a_title, a_desc) in enumerate(AI_ENGINE_CONFIGS):
+            card_rect = pygame.Rect(px + 14, ai_btn_y + idx * (ai_btn_h + ai_gap), pw - 28, ai_btn_h)
+            self.ai_rects[a_id] = card_rect
+
+            is_active = (self.ai_engine == a_id)
+            is_hover = card_rect.collidepoint(mouse_pos)
+
+            if is_active:
+                pygame.draw.rect(self.screen, (22, 102, 168), card_rect, border_radius=5)
+                pygame.draw.rect(self.screen, (255, 215, 0), card_rect, width=2, border_radius=5)
+
+                rx, ry = card_rect.x + 16, card_rect.centery
+                pygame.draw.circle(self.screen, (255, 215, 0), (rx, ry), 6, width=2)
+                pygame.draw.circle(self.screen, (255, 215, 0), (rx, ry), 3)
+
+                title_txt = self.font_bold.render(a_title, True, (255, 255, 255))
+                self.screen.blit(title_txt, (card_rect.x + 30, card_rect.centery - title_txt.get_height() // 2))
+
+                badge_txt = self.font_badge.render("CHỌN", True, (255, 215, 0))
+                self.screen.blit(badge_txt, (card_rect.right - badge_txt.get_width() - 8, card_rect.centery - badge_txt.get_height() // 2))
+
+            else:
+                card_bg = (48, 44, 40) if is_hover else (30, 27, 25)
+                card_border = (120, 110, 100) if is_hover else (55, 50, 46)
+
+                pygame.draw.rect(self.screen, card_bg, card_rect, border_radius=5)
+                pygame.draw.rect(self.screen, card_border, card_rect, width=1, border_radius=5)
+
+                rx, ry = card_rect.x + 16, card_rect.centery
+                dot_col = (200, 195, 185) if is_hover else (120, 115, 105)
+                pygame.draw.circle(self.screen, dot_col, (rx, ry), 6, width=1)
+
+                text_col = (240, 235, 225) if is_hover else (175, 170, 160)
+                title_txt = self.font_main.render(a_title, True, text_col)
+                self.screen.blit(title_txt, (card_rect.x + 30, card_rect.centery - title_txt.get_height() // 2))
+
+        # ---------------------------------------------------------------------
+        # 3. Bộ chọn CHẾ ĐỘ CHƠI (Mode Selector)
+        # ---------------------------------------------------------------------
+        mode_sec_y = ai_btn_y + len(AI_ENGINE_CONFIGS) * (ai_btn_h + ai_gap) + 8
+        pygame.draw.line(self.screen, (55, 50, 45), (px + 14, mode_sec_y), (px + pw - 14, mode_sec_y))
+
+        sec_title = self.font_bold.render("CHỌN CHẾ ĐỘ CHƠI:", True, (241, 196, 15))
+        self.screen.blit(sec_title, (px + 14, mode_sec_y + 6))
+
+        mode_btn_y = mode_sec_y + 22
+        mode_btn_h = 30
+        mode_gap = 4
 
         for idx, (m_id, m_title, m_desc) in enumerate(MODE_CONFIGS):
             card_rect = pygame.Rect(px + 14, mode_btn_y + idx * (mode_btn_h + mode_gap), pw - 28, mode_btn_h)
@@ -603,55 +694,43 @@ class XiangqiUI:
             is_hover = card_rect.collidepoint(mouse_pos)
 
             if is_active:
-                # Chế độ đang chọn: Nổi bật vượt trội với nền sapphire + viền vàng kim 2px
-                pygame.draw.rect(self.screen, (24, 98, 178), card_rect, border_radius=6)
-                pygame.draw.rect(self.screen, (255, 215, 0), card_rect, width=2, border_radius=6)
+                pygame.draw.rect(self.screen, (24, 98, 178), card_rect, border_radius=5)
+                pygame.draw.rect(self.screen, (255, 215, 0), card_rect, width=2, border_radius=5)
 
-                # Vẽ Radio Button tích chọn màu vàng sáng
-                rx, ry = card_rect.x + 18, card_rect.centery
-                pygame.draw.circle(self.screen, (255, 215, 0), (rx, ry), 7, width=2)
-                pygame.draw.circle(self.screen, (255, 215, 0), (rx, ry), 4)
+                rx, ry = card_rect.x + 16, card_rect.centery
+                pygame.draw.circle(self.screen, (255, 215, 0), (rx, ry), 6, width=2)
+                pygame.draw.circle(self.screen, (255, 215, 0), (rx, ry), 3)
 
                 title_txt = self.font_mode_title.render(m_title, True, (255, 255, 255))
-                self.screen.blit(title_txt, (card_rect.x + 34, card_rect.y + 4))
-
-                sub_txt = self.font_mode_sub.render(m_desc, True, (200, 230, 255))
-                self.screen.blit(sub_txt, (card_rect.x + 34, card_rect.y + 21))
+                self.screen.blit(title_txt, (card_rect.x + 30, card_rect.centery - title_txt.get_height() // 2))
 
             else:
-                # Chế độ chưa chọn: màu tối thanh lịch
                 card_bg = (48, 44, 40) if is_hover else (30, 27, 25)
                 card_border = (125, 115, 105) if is_hover else (56, 51, 46)
 
-                pygame.draw.rect(self.screen, card_bg, card_rect, border_radius=6)
-                pygame.draw.rect(self.screen, card_border, card_rect, width=1, border_radius=6)
+                pygame.draw.rect(self.screen, card_bg, card_rect, border_radius=5)
+                pygame.draw.rect(self.screen, card_border, card_rect, width=1, border_radius=5)
 
-                # Vẽ Radio Button chưa chọn
-                rx, ry = card_rect.x + 18, card_rect.centery
+                rx, ry = card_rect.x + 16, card_rect.centery
                 dot_color = (200, 195, 185) if is_hover else (130, 125, 115)
-                pygame.draw.circle(self.screen, dot_color, (rx, ry), 7, width=1)
+                pygame.draw.circle(self.screen, dot_color, (rx, ry), 6, width=1)
 
                 text_col = (240, 235, 225) if is_hover else (175, 170, 160)
                 title_txt = self.font_mode_title.render(m_title, True, text_col)
-                self.screen.blit(title_txt, (card_rect.x + 34, card_rect.y + 4))
+                self.screen.blit(title_txt, (card_rect.x + 30, card_rect.centery - title_txt.get_height() // 2))
 
-                sub_col = (185, 180, 170) if is_hover else (130, 125, 118)
-                sub_txt = self.font_mode_sub.render(m_desc, True, sub_col)
-                self.screen.blit(sub_txt, (card_rect.x + 34, card_rect.y + 21))
-
-        # Đường phân cách
+        # ---------------------------------------------------------------------
+        # 4. Các nút thao tác chức năng (Action Buttons)
+        # ---------------------------------------------------------------------
         act_sec_y = mode_btn_y + len(MODE_CONFIGS) * (mode_btn_h + mode_gap) + 8
         pygame.draw.line(self.screen, (55, 50, 45), (px + 14, act_sec_y), (px + pw - 14, act_sec_y))
 
-        # ---------------------------------------------------------------------
-        # 3. Các nút thao tác chức năng (Action Buttons)
-        # ---------------------------------------------------------------------
         act_lbl = self.font_bold.render("THAO TÁC:", True, (200, 195, 185))
-        self.screen.blit(act_lbl, (px + 14, act_sec_y + 8))
+        self.screen.blit(act_lbl, (px + 14, act_sec_y + 6))
 
-        btn_start_y = act_sec_y + 28
-        btn_h = 34
-        btn_gap = 7
+        btn_start_y = act_sec_y + 22
+        btn_h = 30
+        btn_gap = 5
 
         action_defs = [
             ("undo", "Đi Lại (Undo)  [U]", (52, 73, 94), (64, 88, 112)),
@@ -679,8 +758,8 @@ class XiangqiUI:
             self.screen.blit(txt, (b_rect.centerx - txt.get_width() // 2, b_rect.centery - txt.get_height() // 2))
 
         # Hướng dẫn nhanh ở chân trang
-        footer_y = py + ph - 22
-        foot_txt = self.font_small.render("Phím tắt: U (Undo) | R (Ván mới) | M (Chế độ) | F (Xoay)", True, (130, 125, 115))
+        footer_y = py + ph - 16
+        foot_txt = self.font_small.render("Phím tắt: U (Undo) | R (Ván mới) | A (Đổi AI) | M | F", True, (130, 125, 115))
         self.screen.blit(foot_txt, (px + (pw - foot_txt.get_width()) // 2, footer_y))
 
     def render(self):
@@ -713,6 +792,8 @@ class XiangqiUI:
                         self.reset_game()
                     elif event.key == pygame.K_m:
                         self.cycle_mode()
+                    elif event.key == pygame.K_a:
+                        self.cycle_ai_engine()
                     elif event.key == pygame.K_f:
                         self.flip_board = not self.flip_board
                     elif event.key == pygame.K_SPACE:
@@ -720,7 +801,7 @@ class XiangqiUI:
                             self.ai_paused = not self.ai_paused
                         else:
                             if not self.game.outcome():
-                                best_m = get_best_move(self.game)
+                                best_m = self.compute_ai_move()
                                 if best_m:
                                     self.apply_move(best_m)
                     elif event.key == pygame.K_ESCAPE:
