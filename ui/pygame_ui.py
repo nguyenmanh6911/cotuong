@@ -20,7 +20,7 @@ from game import (
     VUA, SI, TUONG, MA, XE, PHAO, TOT
 )
 from ai.rollout import get_best_move
-
+from ai.mcts import mcts_best_move
 # Danh mục các chế độ chơi
 MODE_HUMAN_VS_AI_RED = "human_vs_ai_red"      # Người đi Đỏ (trước), Máy đi Đen (sau)
 MODE_HUMAN_VS_AI_BLACK = "human_vs_ai_black"  # Máy đi Đỏ (trước), Người đi Đen (sau)
